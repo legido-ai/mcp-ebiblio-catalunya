@@ -80,15 +80,20 @@ Loans are returnable, and there are two routes — the difference matters:
   ```sh
   adept_loan_mgt --adept-directory <adept> --list
   #        ID            Book          Expiration
-  #  f59c20db0eabf044    El Pas         (Expired)
-  adept_loan_mgt --adept-directory <adept> --return f59c20db0eabf044
-  #  Loan f59c20db0eabf044 successfully returned
+  #  3c88253a854d7c34    El Paso       (Expired)
+  printf 'y\n' | adept_loan_mgt -D <adept> -r 3c88253a854d7c34
+  #  Loan 3c88253a854d7c34 successfully returned
   ```
 
-  Verified: after that, `/patrons/{pid}/checkouts` was **empty** — the library
-  account was freed. `fetch_issue` does this automatically after deprotecting
-  (see `returned_loan_id` in its result), and `AdeptToolchain.return_latest()`
-  is the helper. Expiry in the listing does not prevent the return, and `-r`
+  **The invocation matters, and the obvious one is wrong**: the long form
+  (`--return <id>`) exits **0**, prints nothing and returns nothing at all — the
+  loan is still in the list afterwards. Only the short `-r <id>` returns it, and
+  because `-r` asks for confirmation, `y` has to be written to stdin; otherwise
+  the tool reads EOF and does nothing. Verified: after the real return,
+  `/patrons/{pid}/checkouts` was **empty** — the library account was freed.
+  `fetch_issue` does this automatically after deprotecting (see
+  `returned_loan_id` in its result), and `AdeptToolchain.return_latest()` is the
+  helper. Expiry in the listing does not prevent the return, and `-r`
   needs the loan id as an argument.
 
 So: fulfil the ACSM → `adept_remove` → plain PDF (no format conversion needed) →

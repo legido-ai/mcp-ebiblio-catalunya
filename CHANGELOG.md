@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.3 — 2026-10-22
+
+**The Adobe return used the wrong invocation.** 0.1.2 called
+`adept_loan_mgt --adept-directory <adept> --return <id>`, which on the live tool
+**exits 0, prints nothing and returns nothing at all** — the loan stays in the
+list while the code believes it was handed back. The invocation that works is the
+short form, with its confirmation answered on stdin:
+
+```sh
+printf 'y\n' | adept_loan_mgt -D <adept> -r <id>
+# Loan 3c88253a854d7c34 successfully returned
+```
+
+- `drm`: `return_loan` uses `-D <adept> -r <id>` and writes `y\n` to stdin; a
+  silent run is now a failure rather than a success, so this cannot regress
+  quietly.
+- Tests pin both facts: the short form is used, and an empty output raises.
+- Found live, during the news mirror's first Catalunya fetch (the loan it left
+  open was returned by hand, and the account was empty afterwards).
+
 ## 0.1.2 — 2026-10-22
 
 **An ACSM loan can be returned after all** — through the Adobe protocol rather

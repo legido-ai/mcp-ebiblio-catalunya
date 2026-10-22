@@ -45,13 +45,18 @@ def test_return_loan_calls_the_loan_manager_with_the_id(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
         return Result()
 
     monkeypatch.setattr("odilo_ebiblio.drm.subprocess.run", fake_run)
     monkeypatch.setattr("odilo_ebiblio.drm._binary", lambda name, bin_dir: name)
     assert _activated(tmp_path).return_loan("f59c20db0eabf044") is True
     assert captured["cmd"][0] == "adept_loan_mgt"
-    assert "--return" in captured["cmd"] and "f59c20db0eabf044" in captured["cmd"]
+    # The long form (--return) exits 0 and returns nothing at all: only -r works,
+    # and it asks for confirmation, so the answer has to be written to stdin.
+    assert "-r" in captured["cmd"] and "f59c20db0eabf044" in captured["cmd"]
+    assert "--return" not in captured["cmd"]
+    assert captured["input"] == "y\n"
 
 
 def test_return_loan_reports_a_refusal(tmp_path, monkeypatch):

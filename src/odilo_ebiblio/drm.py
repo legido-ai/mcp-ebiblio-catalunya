@@ -194,12 +194,17 @@ class AdeptToolchain:
         the vendor's fulfilment server is notified and the loan disappears from
         the library account, even though the library's own web API refuses to
         return an ACSM loan directly. ``loan_id`` comes from :meth:`loans`.
+
+        Two invocation details are not optional, both measured against the live
+        tool: the **long** form (``--return <id>``) prints nothing, exits 0 and
+        returns nothing at all — the loan stays in the list — so the short
+        ``-r <id>`` is the one that works; and ``-r`` asks for confirmation, so
+        ``y`` has to be written to stdin or it reads EOF and does nothing.
         """
         self.ensure_activated()
         result = subprocess.run(
-            [_binary(LOAN_MGT, self.bin_dir), "--adept-directory", str(self.adept_dir),
-             "--return", loan_id],
-            capture_output=True, text=True, timeout=self.timeout,
+            [_binary(LOAN_MGT, self.bin_dir), "-D", str(self.adept_dir), "-r", loan_id],
+            capture_output=True, text=True, input="y\n", timeout=self.timeout,
         )
         output = (result.stdout or "") + (result.stderr or "")
         if result.returncode != 0 or "successfully returned" not in output.lower():
