@@ -17,9 +17,16 @@ printf 'y\n' | adept_loan_mgt -D <adept> -r <id>
   silent run is now a failure rather than a success, so this cannot regress
   quietly.
 - Tests pin both facts: the short form is used, and an empty output raises.
-- `fetch_issue` s served description said the loan "cannot be returned afterwards":
-  corrected — it is returned through the Adobe protocol and reports
-  `returned_loan_id`.
+- `fetch_issue`'s served description said the loan "cannot be returned
+  afterwards": corrected — it is returned through the Adobe protocol and reports
+  `returned_loan_id`. The description is what a model reads before deciding
+  whether to return anything, so it is corrected as carefully as the code.
+- Registered in Hermes as the `ebiblio-catalunya` MCP server, so its seven tools
+  (`find_publication`, `list_issues`, `borrow_issue`, `fetch_issue`, `list_loans`,
+  `return_loan`, `account`) are callable directly: `config.yaml` runs
+  `oci-env` (credentials from the vault, never in the file) plus `docker run` on
+  the `mcp-ebiblio` image with this repository's `src/` mounted read-only, which
+  is what supplies libgourou.
 - Found live, during the news mirror's first Catalunya fetch (the loan it left
   open was returned by hand, and the account was empty afterwards).
 
