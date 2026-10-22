@@ -47,13 +47,38 @@ house style throughout the API. And the per-checkout `token` inside
 `downloadUrl` is the only token the download accepts; the client token gives
 `400 ["Invalid checkout token …"]`.
 
+## Formats, and the five-minute window
+
+The same loan offers three download formats, and they are not interchangeable:
+
+- **ACSM** — the Adobe fulfilment token (~1.3 KB). This is the route that yields
+  a file, but the token **expires in about five minutes**, so it must be
+  fulfilled immediately (`acsmdownloader` + `adept_remove` via libgourou). The
+  result is the complete issue: 21.8 MB, 56 pages for El País. Fetching the ACSM
+  also makes the loan non-returnable.
+- **OCS** — a ~20 MB PDF that is, despite the name, **AES-256 encrypted** with an
+  Odilo policy key (`/V 5 /R 6 /CFM /AESV3`, empty password refused); only their
+  reader opens it. The loan stays returnable.
+- **PDF** — an HTML reader wrapper (`nubereader-pdfs.odilotk.es`), not a file.
+
+A job that wants the paper takes the ACSM and fulfils it in the same breath.
+A caller that only wants to read and hand the loan back takes OCS.
+
 ## Returns
 
-`POST /checkouts/{cid}/return` works only while the loan is still `returnable`.
-A loan that was never downloaded returns cleanly; **once the ACSM has been
-served the loan reports `returnable: false` and every return attempt is 400**.
-A download therefore consumes the loan, which is why an unattended caller must
-not borrow the same issue from a second source.
+`POST /checkouts/{cid}/return` works — the return button exists and the call
+returns `200`, after which the loan is gone from `/patrons/{pid}/checkouts`.
+
+What removes the option is the ACSM: the platform's own code sets
+`returnable = false` when the download format includes `ACSM` (verbatim from the
+bundle: `downloadFormat.includes("ACSM") && (…returnable = false)`), and the
+server then answers `400` on every attempt. A loan taken through **OCS** stays
+`returnable: true` and returns cleanly — verified: borrowed, fetched 20.4 MB,
+returned, `still held: False`.
+
+Newspaper loans last **60–120 minutes** and are renewable (`POST
+/checkouts/{cid}/renew`, body `patronId=`; it returns a fresh checkout with its
+own `downloadUrl`).
 
 ## Install and run
 

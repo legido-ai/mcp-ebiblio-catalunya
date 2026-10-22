@@ -139,7 +139,7 @@ def test_download_uses_the_checkout_url_and_saves_an_acsm(settings, token_respon
     path = client.download(checkout)
     assert path.suffix == ".acsm"
     assert path.read_bytes() == blob
-    assert path.name == "00518339-20261022.acsm"
+    assert path.name == "00518339-20261022-acsm.acsm"
     assert is_acsm(blob) and not is_acsm(b"%PDF-1.7")
     # the download carries no bearer token: the per-checkout token is the only valid one
     assert "Authorization" not in session.called("/checkouts/1/download")["headers"]
@@ -150,6 +150,32 @@ def test_download_without_url_explains_itself(settings, token_response):
     with pytest.raises(Exception) as err:
         client.download(Checkout(id="1", record_id="2"))
     assert "downloadUrl" in str(err.value)
+
+
+def test_ocs_download_follows_the_extract_url_route(settings, token_response):
+    """OCS hands back a location, not the bytes: the file lives on Odilo's CDN."""
+    checkout = Checkout(id="77", record_id="00518339", issue_date="20261022",
+                        download_url="https://biblioteca.ebiblio.cat/opac/api/v2/checkouts/77/download"
+                                     "?patronId=1&checkoutId=77&token=percheckout")
+    session = FakeSession([
+        ("/token", token_response),
+        ("/login", FakeResponse(200, json_body={"id": "360054490"})),
+        ("/checkouts/77/download", FakeResponse(200, json_body={"redirect": "https://cdn.us.odilo.io/ocs/x.ocs"})),
+        ("cdn.us.odilo.io", FakeResponse(200, content=b"%PDF-1.3\n...")),
+    ])
+    client = OdiloClient(settings, transport=session)
+    path = client.download(checkout, format="OCS")
+    assert path.name == "00518339-20261022-ocs.pdf"
+    assert path.read_bytes().startswith(b"%PDF")
+    call = session.called("/checkouts/77/download")
+    assert "format=OCS" in call["url"] and "extractUrl=yes" in call["url"]
+    assert "token=percheckout" in call["url"]  # the checkout's token, never the client one
+
+
+def test_checkout_token_is_read_from_download_url():
+    loan = Checkout(id="1", record_id="2", download_url="https://x/download?patronId=9&token=abc123")
+    assert OdiloClient.checkout_token(None, loan) == "abc123"  # type: ignore[arg-type]
+    assert OdiloClient.checkout_token(None, Checkout(id="1", record_id="2")) is None  # type: ignore[arg-type]
 
 
 def test_return_reports_false_when_the_loan_is_not_returnable(settings, token_response):

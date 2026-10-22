@@ -339,8 +339,15 @@ class OdiloClient:
     def return_checkout(self, checkout_id: str) -> bool:
         """Return a loan. Only possible while it is still returnable.
 
-        A loan whose ACSM has been downloaded reports ``returnable: false`` and
-        every return attempt fails with HTTP 400 — the download consumes it.
+        Loans are returnable — the return button exists and it works. What
+        removes the option is the ACSM download: the platform's own code sets
+        ``returnable = false`` when the download format includes ``ACSM``
+        (verified in the bundle: ``downloadFormat.includes("ACSM") && (…returnable
+        = false)``), and the server then answers HTTP 400 on every attempt.
+
+        So an issue delivered as OCS can be fetched *and* returned, while one
+        fulfilled from its ACSM cannot — it simply expires, which for a
+        newspaper loan takes 60–120 minutes.
         """
         patron = self.ensure_login()
         query = f"patronId={patron}"
@@ -349,25 +356,63 @@ class OdiloClient:
         )
         return response.status_code == 200
 
-    # ----------------------------------------------------------------- download
-    def download(self, checkout: Checkout, *, dest_dir: Any = None) -> Any:
+    def checkout_token(self, checkout: Checkout) -> str | None:
+        """The per-checkout token Odilo embeds in ``downloadUrl``.
+
+        The download endpoint rejects anything else: the client token earns
+        ``400 ["Invalid checkout token ..."]``.
+        """
+        if not checkout.download_url:
+            return None
+        from urllib.parse import parse_qs, urlparse
+
+        return parse_qs(urlparse(checkout.download_url).query).get("token", [None])[0]
+
+    def download(self, checkout: Checkout, *, format: str = "ACSM", dest_dir: Any = None) -> Any:
         """Fetch the loan file and save it; returns the saved path.
 
-        The per-checkout token inside ``download_url`` is the only valid one:
-        passing the client token to ``/checkouts/{id}/download`` fails with
-        ``400 ["Invalid checkout token ..."]``.
+        The three formats Odilo offers for a newspaper loan are very different:
+
+        ``ACSM`` (default)
+            the Adobe fulfilment token (~1.3 KB). It **expires within about five
+            minutes**, so it must be fulfilled immediately (``drm.fulfil_acsm``)
+            — a token left lying around answers ``E_ADEPT_REQUEST_EXPIRED``.
+            Fulfilling it yields the complete issue (~22 MB, 56 pages for El
+            País). Fetching the ACSM also makes the loan non-returnable.
+        ``OCS``
+            a large PDF (~20 MB) that is, despite the name, **AES-256
+            encrypted** with an Odilo policy key; only their reader opens it.
+            The loan stays returnable.
+        ``PDF``
+            an HTML reader wrapper (``nubereader-pdfs.odilotk.es``), not a file.
         """
         import pathlib
 
-        if not checkout.download_url:
-            raise OdiloError("checkout carries no downloadUrl; re-borrow or re-list loans")
-        response = self._request("GET", checkout.download_url, auth=False, allow=(200,))
-        blob = response.content
+        wanted = (format or "ACSM").upper()
+        if wanted == "ACSM" and checkout.download_url:
+            response = self._request("GET", checkout.download_url, auth=False, allow=(200,))
+            blob = response.content
+        else:
+            token = self.checkout_token(checkout)
+            if not token:
+                raise OdiloError("checkout carries no downloadUrl; re-borrow or re-list loans")
+            from urllib.parse import urlencode
+
+            query = urlencode({
+                "patronId": self.ensure_login(), "format": wanted, "token": token,
+                "redirect": "no", "extractUrl": "yes", "recordId": checkout.record_id,
+            })
+            response = self._request("GET", f"/checkouts/{checkout.id}/download?{query}", allow=(200,))
+            payload = response.json()
+            url = payload.get("redirect") or payload.get("url")
+            if not url:
+                raise OdiloError(f"no file location in the {wanted} response: {str(payload)[:120]}")
+            blob = self._request("GET", url, auth=False, allow=(200,)).content
         folder = pathlib.Path(dest_dir) if dest_dir else self.settings.download_dir
         folder.mkdir(parents=True, exist_ok=True)
         stamp = checkout.issue_date or time.strftime("%Y%m%d")
         suffix = ".acsm" if is_acsm(blob) else (".pdf" if blob[:4] == b"%PDF" else ".bin")
-        path = folder / f"{checkout.record_id}-{stamp}{suffix}"
+        path = folder / f"{checkout.record_id}-{stamp}-{wanted.lower()}{suffix}"
         path.write_bytes(blob)
         return path
 

@@ -102,9 +102,10 @@ def borrow_issue(title: str, issue: str = "") -> dict[str, Any]:
 def fetch_issue(title: str, issue: str = "", deprotect: bool = True) -> dict[str, Any]:
     """Borrow an issue, download it, and deprotect it. The job-facing tool.
 
-    Returns the path of the file. Without libgourou the ACSM token is kept.
-    A loan whose file has already been downloaded cannot be returned, so the
-    loan is only returned when nothing was downloaded.
+    Returns the path of the file. The ACSM expires within about five minutes,
+    so it is fetched and fulfilled back to back in this one call; a loan taken
+    this way cannot be returned afterwards, it just expires (60-120 minutes).
+    Without libgourou the ACSM token is kept, but it will go stale.
     """
     client = get_client()
     settings = get_settings()
