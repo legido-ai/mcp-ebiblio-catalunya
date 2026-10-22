@@ -19,6 +19,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import re
 import shutil
 import subprocess
 from contextlib import contextmanager
@@ -30,6 +31,7 @@ log = logging.getLogger("odilo.drm")
 ACTIVATE = "adept_activate"
 DOWNLOAD = "acsmdownloader"
 REMOVE = "adept_remove"
+LOAN_MGT = "adept_loan_mgt"
 
 
 class DrmError(RuntimeError):
@@ -50,6 +52,35 @@ def _binary(name: str, bin_dir: Path | None) -> str:
 def _tail(text: str, limit: int = 400) -> str:
     text = (text or "").strip().replace("\n", " ")
     return text[-limit:] if text else "no output"
+
+
+def parse_loan_list(text: str) -> list[dict[str, str]]:
+    """Parse ``adept_loan_mgt -l`` output into loan entries.
+
+    The tool prints a title row, a dashed rule and then one row per loan::
+
+               ID            Book          Expiration
+        --------------------------------------------------
+        f59c20db0eabf044    El Pas         (Expired)
+    """
+    loans: list[dict[str, str]] = []
+    for line in (text or "").splitlines():
+        row = line.strip()
+        if not row or set(row) <= {"-", " "} or row.upper().startswith("ID"):
+            continue
+        parts = row.split()
+        # A real row is "<hex id> <title...> (<expiration>)"; this also skips the
+        # "No books loaned" line the tool prints when there is nothing to show.
+        if len(parts) < 3 or not re.fullmatch(r"[0-9a-f]{8,}", parts[0]):
+            continue
+        if not parts[-1].startswith("("):
+            continue
+        loans.append({
+            "loan_id": parts[0],
+            "title": " ".join(parts[1:-1]),
+            "expiration": parts[-1],
+        })
+    return loans
 
 
 def _sniff(path: Path) -> str:
@@ -144,6 +175,46 @@ class AdeptToolchain:
         encrypted.unlink(missing_ok=True)
         log.info("DRM removed into %s", removed)
         return removed
+
+    # -------------------------------------------------------------- loan handling
+    def loans(self) -> list[dict[str, str]]:
+        """Loans libgourou has recorded, from ``adept_loan_mgt --list``."""
+        result = subprocess.run(
+            [_binary(LOAN_MGT, self.bin_dir), "--adept-directory", str(self.adept_dir), "--list"],
+            capture_output=True, text=True, timeout=self.timeout,
+        )
+        if result.returncode != 0:
+            raise DrmError("listing loans failed: " + _tail(result.stderr or result.stdout))
+        return parse_loan_list(result.stdout or result.stderr)
+
+    def return_loan(self, loan_id: str) -> bool:
+        """Return a loan to the vendor through the Adobe protocol.
+
+        This is the return that works for an issue whose ACSM was fulfilled:
+        the vendor's fulfilment server is notified and the loan disappears from
+        the library account, even though the library's own web API refuses to
+        return an ACSM loan directly. ``loan_id`` comes from :meth:`loans`.
+        """
+        self.ensure_activated()
+        result = subprocess.run(
+            [_binary(LOAN_MGT, self.bin_dir), "--adept-directory", str(self.adept_dir),
+             "--return", loan_id],
+            capture_output=True, text=True, timeout=self.timeout,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode != 0 or "successfully returned" not in output.lower():
+            raise DrmError("returning the loan failed: " + _tail(output))
+        log.info("loan %s returned to the vendor", loan_id)
+        return True
+
+    def return_latest(self) -> str | None:
+        """Return the most recently fulfilled loan; returns its id, or None."""
+        loans = self.loans()
+        if not loans:
+            return None
+        loan_id = loans[-1]["loan_id"]
+        self.return_loan(loan_id)
+        return loan_id
 
 
 def convert_ebook(source: Path, target_format: str, out_path: Path,

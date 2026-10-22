@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 — 2026-10-22
+
+**An ACSM loan can be returned after all** — through the Adobe protocol rather
+than the library API. `acsmdownloader` serialises a signed loan token into
+`<adept>/loans/<hash>.xml`; `adept_loan_mgt --list` shows it and
+`adept_loan_mgt --return <id>` hands it back to the vendor
+(`odilotk.es/fulfillment`), after which the library account shows **no open
+loans**. Verified end to end: fulfilled El País 2026-10-22, then returned it and
+`/patrons/{pid}/checkouts` was empty.
+
+- `drm`: `AdeptToolchain.loans()`, `return_loan(loan_id)`, `return_latest()` and
+  the `parse_loan_list()` parser.
+- `fetch_issue` now returns the loan through the Adobe protocol right after
+  deprotecting and reports `returned_loan_id`, so nothing stays on the account.
+- README: both return routes documented, with the `400` case explained.
+
 ## 0.1.1 — 2026-10-22
 
 Verified the whole chain against the live service and corrected two things the

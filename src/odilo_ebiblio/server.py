@@ -132,6 +132,13 @@ def fetch_issue(title: str, issue: str = "", deprotect: bool = True) -> dict[str
             final = _toolchain().fulfil_acsm(acsm, Path(settings.download_dir) / "drm-free")
             result["deprotected"] = str(final)
             result["file"] = str(final)
+            # The library's web API refuses to return an ACSM loan, but the Adobe
+            # protocol does return it, and the library honours that. Hand the
+            # issue back straight away so nothing is left on the account.
+            try:
+                result["returned_loan_id"] = _toolchain().return_latest()
+            except DrmError as exc:
+                result["return_error"] = str(exc)
         except DrmError as exc:
             result["deprotect_error"] = str(exc)
             result["file"] = str(acsm)

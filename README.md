@@ -66,19 +66,37 @@ A caller that only wants to read and hand the loan back takes OCS.
 
 ## Returns
 
-`POST /checkouts/{cid}/return` works — the return button exists and the call
-returns `200`, after which the loan is gone from `/patrons/{pid}/checkouts`.
+Loans are returnable, and there are two routes — the difference matters:
 
-What removes the option is the ACSM: the platform's own code sets
-`returnable = false` when the download format includes `ACSM` (verbatim from the
-bundle: `downloadFormat.includes("ACSM") && (…returnable = false)`), and the
-server then answers `400` on every attempt. A loan taken through **OCS** stays
-`returnable: true` and returns cleanly — verified: borrowed, fetched 20.4 MB,
-returned, `still held: False`.
+- **Library API**: `POST /checkouts/{cid}/return` (body/query `patronId=`). It
+  returns `200` and the loan disappears for a loan whose file was never
+  fetched. Once the **ACSM** has been served, the platform sets
+  `returnable = false` (verbatim from its bundle:
+  `downloadFormat.includes("ACSM") && (…returnable = false)`) and answers `400`.
+- **Adobe loan protocol**: the return that always works. `acsmdownloader`
+  serialises a signed loan token into `<adept>/loans/<hash>.xml`, and libgourou's
+  loan manager hands it back to the vendor's fulfilment server:
+
+  ```sh
+  adept_loan_mgt --adept-directory <adept> --list
+  #        ID            Book          Expiration
+  #  f59c20db0eabf044    El Pas         (Expired)
+  adept_loan_mgt --adept-directory <adept> --return f59c20db0eabf044
+  #  Loan f59c20db0eabf044 successfully returned
+  ```
+
+  Verified: after that, `/patrons/{pid}/checkouts` was **empty** — the library
+  account was freed. `fetch_issue` does this automatically after deprotecting
+  (see `returned_loan_id` in its result), and `AdeptToolchain.return_latest()`
+  is the helper. Expiry in the listing does not prevent the return, and `-r`
+  needs the loan id as an argument.
+
+So: fulfil the ACSM → `adept_remove` → plain PDF (no format conversion needed) →
+return the loan through the Adobe protocol. Nothing is left on the account.
 
 Newspaper loans last **60–120 minutes** and are renewable (`POST
 /checkouts/{cid}/renew`, body `patronId=`; it returns a fresh checkout with its
-own `downloadUrl`).
+own `downloadUrl`; `409 Checkout not renewable` once used).
 
 ## Install and run
 
