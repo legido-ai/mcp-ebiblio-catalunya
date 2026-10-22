@@ -103,9 +103,11 @@ def fetch_issue(title: str, issue: str = "", deprotect: bool = True) -> dict[str
     """Borrow an issue, download it, and deprotect it. The job-facing tool.
 
     Returns the path of the file. The ACSM expires within about five minutes,
-    so it is fetched and fulfilled back to back in this one call; a loan taken
-    this way cannot be returned afterwards, it just expires (60-120 minutes).
-    Without libgourou the ACSM token is kept, but it will go stale.
+    so it is fetched and fulfilled back to back in this one call. The loan is
+    then handed back through the Adobe protocol (``return_latest``), which works
+    even though the web API refuses once the ACSM has been served — so nothing
+    is left on the account; ``returned_loan_id`` carries the id. Without
+    libgourou the ACSM token is kept, but it will go stale.
     """
     client = get_client()
     settings = get_settings()

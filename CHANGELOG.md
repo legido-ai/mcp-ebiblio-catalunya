@@ -17,6 +17,9 @@ printf 'y\n' | adept_loan_mgt -D <adept> -r <id>
   silent run is now a failure rather than a success, so this cannot regress
   quietly.
 - Tests pin both facts: the short form is used, and an empty output raises.
+- `fetch_issue` s served description said the loan "cannot be returned afterwards":
+  corrected — it is returned through the Adobe protocol and reports
+  `returned_loan_id`.
 - Found live, during the news mirror's first Catalunya fetch (the loan it left
   open was returned by hand, and the account was empty afterwards).
 
