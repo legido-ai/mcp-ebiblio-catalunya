@@ -1,7 +1,8 @@
 # mcp-ebiblio-catalunya
 
 MCP server for **eBiblio Catalunya**, the Catalan public-library e-lending
-service. It borrows and downloads newspaper and magazine issues.
+service. It borrows and downloads newspaper and magazine issues, **and music
+albums**.
 
 Andalucía's eBiblio runs on **Cantook**; Catalunya runs on **Odilo**. They share
 no endpoint, no session model and no catalogue ids, so this is a separate server
@@ -124,8 +125,44 @@ PATH for deprotection; without it the ACSM is still fetched and returned.
 - `find_publication(title, kind="newspaper")` — record id, issues available, newest issue
 - `list_issues(title, limit=14)` — issues, newest first
 - `borrow_issue(title, issue="")` — borrow (reuses a loan already held)
-- `fetch_issue(title, issue="", deprotect=True)` — borrow, download, deprotect; the job-facing tool
+- `fetch_issue(title, issue="", deprotect=True)` — borrow, download, deprotect; the job-facing tool for the press
+- `find_album(query, limit=10)` — music albums matching a query (composer, performer, publisher)
+- `fetch_album(record_id="", query="", dest_dir="")` — borrow an album, **return the loan**, download its tracks as MP3; the job-facing tool for music
 - `list_loans()`, `return_loan(checkout_id)`, `account()`
+
+## Music albums: a different loan, and a different order
+
+An album is not a newspaper with another flag. Its formats are `MP3` and
+`AUDIO_ENCRYPTED` — **no ACSM**, so libgourou is not involved and nothing needs
+unprotecting:
+
+```
+POST /records/{rid}/checkout?patronId=&from=RECORD_SCREEN      (no issue date)
+GET  /checkouts/{id}/download?format=MP3&token=…               -> player link (mediaId + keyId)
+POST /checkouts/{id}/return?patronId=                          <- the loan is handed back HERE
+GET  https://player.eu.odilo.io/api/v1/media/{mediaId}/play?keyId=…
+                                                               -> the album's tracks, signed MP3 URLs
+GET  <signed url>                                              -> plain 192 kbps MP3
+```
+
+The return sits *before* the downloads, and that is the one thing worth not
+"fixing". Measured against the live service:
+
+- while the loan is open the player link can be taken and the loan returned — 200,
+  account free again — and the signed CloudFront URLs still deliver every track
+  afterwards;
+- download a track **first** and the platform marks the loan `returnable: false`
+  for the rest of its **21 days**; every return then answers HTTP 400 and the
+  account is short a loan. Asking for `AUDIO_ENCRYPTED`, `OCS` or `ACSM` poisons
+  the loan the same way, so `fetch_album` never asks for them.
+
+Two more things that cost time to find: the CDN answers **403 without the player
+as the `Referer`**, and `metadata.previewUrl` is a *separate preview object* — the
+`resources` are the complete tracks (13 tracks, 87.9 MB and 109.2 MB for the two
+albums measured on 2026-10-23).
+
+`fetch_album` is idempotent from the caller's side: tracks already on disk are not
+fetched again, and an album whose tracks are all present is not borrowed at all.
 
 ## Tests
 

@@ -157,6 +157,55 @@ def list_loans() -> dict[str, Any]:
 
 
 @mcp.tool()
+def find_album(query: str, limit: int = 10) -> dict[str, Any]:
+    """Music albums matching a query (composer, performer, title, publisher).
+
+    Only records the catalogue marks as an album are returned, so a search for a
+    composer does not come back with books about him or with audiobooks. Record
+    ids are what `fetch_album` wants.
+    """
+    albums = get_client().search_albums(query, limit=24)[:limit]
+    return {
+        "query": query,
+        "count": len(albums),
+        "albums": [
+            {"id": a.id, "title": a.title, "author": a.author,
+             "publisher": a.raw.get("publisher"), "year": a.year,
+             "subjects": a.subjects[:4]}
+            for a in albums
+        ],
+    }
+
+
+@mcp.tool()
+def fetch_album(record_id: str = "", query: str = "", dest_dir: str = "") -> dict[str, Any]:
+    """Borrow an album, return the loan, and download its tracks as plain MP3s.
+
+    The job-facing tool for music. `record_id` (from `find_album`) is precise;
+    `query` is resolved to an album only when no id is given.
+
+    Measured order, and the reason for it: the loan is returned **before** any
+    track is downloaded. An audio loan left open after a download cannot be given
+    back (the platform marks it non-returnable for its 21-day term), while the
+    signed track URLs stay valid after the return — so the account is free again
+    before the first byte arrives. Tracks land in ``<data>/music/<record_id>/``
+    with an ``album.json`` beside them; already-downloaded tracks are not
+    fetched twice.
+    """
+    client = get_client()
+    record = client.record(record_id) if record_id else client.find_album(query)
+    if record is None:
+        return {"ok": False, "error": f"no album record for {query!r}"}
+    if record.kind != "album":
+        return {"ok": False, "error": f"record {record.id} is a {record.kind}, not a music album"}
+    try:
+        album = client.fetch_album(record.id, dest_dir=dest_dir or None)
+    except (OdiloError, RequestFailure) as exc:
+        return {"ok": False, "record_id": record.id, "title": record.title, "error": str(exc)}
+    return {"ok": True, **album}
+
+
+@mcp.tool()
 def return_loan(checkout_id: str) -> dict[str, Any]:
     """Return a loan by its checkout id.
 

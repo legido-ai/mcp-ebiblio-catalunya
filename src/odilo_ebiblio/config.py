@@ -14,6 +14,10 @@ from pathlib import Path
 #: ``catalunya.ebiblio.cat`` has no DNS record for API clients.
 DEFAULT_BASE_URL = "https://biblioteca.ebiblio.cat"
 
+#: Odilo's own media player. An album loan hands out a ``mediaId`` + per-checkout
+#: ``keyId`` that this player exchanges for the album's track list.
+DEFAULT_PLAYER_URL = "https://player.eu.odilo.io"
+
 #: Odilo's public client credentials, taken from the anonymous JavaScript
 #: bundle the SPA ships to every visitor. Not a secret: it only mints the
 #: read-only client token used for catalogue browsing.
@@ -61,6 +65,7 @@ class Settings:
     data_dir: Path = Path(DEFAULT_DATA_DIR)
     adept_dir: Path | None = None
     libgourou_bin_dir: Path | None = None
+    player_url: str = DEFAULT_PLAYER_URL
     timeout: int = 120
 
     @property
@@ -70,6 +75,11 @@ class Settings:
     @property
     def download_dir(self) -> Path:
         return Path(self.data_dir) / "downloads"
+
+    @property
+    def music_dir(self) -> Path:
+        """Where borrowed albums land: one directory per catalogue record."""
+        return Path(self.data_dir) / "music"
 
     @property
     def adobe_dir(self) -> Path:
@@ -100,6 +110,7 @@ class Settings:
                 else None
             ),
             timeout=int(env.get("EBIBLIO_TIMEOUT") or 120),
+            player_url=env.get("EBIBLIO_PLAYER_URL") or DEFAULT_PLAYER_URL,
         )
 
     def credential_sources(self) -> tuple[str, str]:

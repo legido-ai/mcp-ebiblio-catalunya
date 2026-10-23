@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0 — 2026-10-23
+
+**Music albums.** The server now lends recordings, not only the press: two new
+tools, `find_album` and `fetch_album`, and the client work behind them. An album
+is a `TIPO_ALBUM` record with `formats: ["MP3", "AUDIO_ENCRYPTED"]` — no ACSM, so
+libgourou is not involved.
+
+The finding that shaped it: **the loan is returned before a single track is
+downloaded**. With the loan open, `format=MP3` hands out a player link
+(`mediaId` + single-use `keyId`) and the loan can be returned (HTTP 200) *before*
+the player's API is ever asked for the tracks — the signed CloudFront URLs keep
+working afterwards. Download first, and the platform marks the loan
+`returnable: false` for its whole 21 days and refuses every return with HTTP 400.
+Asking for `AUDIO_ENCRYPTED`/`OCS`/`ACSM` poisons a loan the same way, so the code
+never asks.
+
+- `client`: `search_albums`, `find_album`, `borrow_record` (no issue date),
+  `mp3_player`, `play_manifest`, `download_track` (the CDN wants the player as
+  `Referer`), `fetch_album` (borrow → player link → **return** → download →
+  `album.json`), plus `Record.kind == "album"`/`"audiobook"`, `author`, `year`,
+  `subjects`, `track_label`, `safe_filename`.
+- `fetch_album` is idempotent: an album whose tracks are all on disk is not even
+  borrowed, and an existing track is never fetched twice.
+- `find_album` filters to albums, so a composer search no longer returns books
+  *about* him, nor audiobooks (those carry no `TIPO_ALBUM`).
+- Nine hermetic tests pin the call shapes, the returned-before-downloaded order,
+  the write-out (titles, durations, `album.json`) and the failure modes (a 403
+  track leaves no `.part` file behind).
+- `scripts/e2e_album.py` runs the whole flow against the live service;
+  `scripts/e2e_catalunya.py` still covers the press.
+
 ## 0.1.3 — 2026-10-22
 
 **The Adobe return used the wrong invocation.** 0.1.2 called

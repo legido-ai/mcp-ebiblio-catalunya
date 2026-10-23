@@ -23,6 +23,7 @@ Two traps worth remembering:
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import time
@@ -81,6 +82,35 @@ def pretty_date(value: str) -> str:
     return f"{value[:4]}-{value[4:6]}-{value[6:8]}" if len(value) == 8 else value
 
 
+#: Odilo titles track order as a numeric prefix (``"01. Nocturno n.2"``); the
+#: prefix belongs in the file name (so the album sorts) and not in the label.
+_TRACK_PREFIX = re.compile(r"^\s*(?:cd\s*\d+\s*[-_. ]*)?\d{1,3}\s*[-_.)]+\s*")
+_UNSAFE_FILENAME = re.compile(r'[/\\:<>\*\?"\|\x00-\x1f]')
+
+
+def track_label(title: str) -> str:
+    """``"01. Nocturno n.2 en do menor"`` -> ``"Nocturno n.2 en do menor"``."""
+    text = _TRACK_PREFIX.sub("", str(title or "")).strip(" -_.")
+    return text or str(title or "").strip() or "Untitled"
+
+
+def safe_filename(text: str, *, limit: int = 120) -> str:
+    """A track title that is safe as a file name on any filesystem."""
+    cleaned = _UNSAFE_FILENAME.sub("-", str(text or "")).strip(" .")
+    return (cleaned[:limit].strip() or "track")
+
+
+def _read_json(path: Any) -> dict[str, Any]:
+    """The JSON at ``path``, or an empty mapping — a missing file is not an error."""
+    import pathlib
+
+    try:
+        payload = json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 @dataclass
 class Record:
     """One catalogue record (a newspaper, a magazine, a book...)."""
@@ -110,17 +140,54 @@ class Record:
 
     @property
     def kind(self) -> str:
-        """newspaper / magazine / ebook / ... derived from resourceTypes."""
+        """newspaper / magazine / album / audiobook / ... from resourceTypes.
+
+        ``TIPO_ALBUM`` is what the Catalan catalogue marks a *music* album with;
+        an audiobook carries ``TIPO_AUDIO``/``TIPO_OCS_AUDIO`` and no album marker,
+        so the two never collapse into each other.
+        """
         for candidate in ("newspaper", "magazine"):
             if any(candidate.upper() in t.upper() for t in self.resource_types):
                 return candidate
+        if any("ALBUM" in t.upper() for t in self.resource_types):
+            return "album"
+        if any("AUDIO" in t.upper() for t in self.resource_types):
+            return "audiobook"
         return "other"
+
+    @property
+    def subjects(self) -> list[str]:
+        raw = self.raw.get("subjects") or self.raw.get("subject") or []
+        if isinstance(raw, str):
+            return [raw]
+        return [str(s) for s in raw]
+
+    @property
+    def author(self) -> str:
+        return str(self.raw.get("author") or "")
+
+    @property
+    def year(self) -> int | None:
+        for field in ("publicationDate", "releaseDate"):
+            digits = str(self.raw.get(field) or "")
+            if len(digits) >= 4 and digits[:4].isdigit():
+                return int(digits[:4])
+        return None
+
+    @property
+    def is_music(self) -> bool:
+        """A lendable recording, as opposed to a book *about* music."""
+        return self.kind == "album" or any("Música" in s or "Music" in s for s in self.subjects)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "title": self.title,
             "kind": self.kind,
+            "author": self.author,
+            "publisher": self.raw.get("publisher"),
+            "year": self.year,
+            "subjects": self.subjects[:6],
             "formats": self.formats,
             "newest_issue": self.newest_issue,
             "issue_dates": self.issue_dates[:30],
@@ -310,12 +377,41 @@ class OdiloClient:
             best = best or candidate
         return best
 
+    def search_albums(self, query: str, *, limit: int = 24) -> list[Record]:
+        """Music albums matching a query.
+
+        A catalogue search for "Bach" mixes albums with books *about* Bach and
+        with audiobooks, so the format marker is what decides: only records the
+        platform labels ``TIPO_ALBUM`` are recordings.
+        """
+        return [r for r in self.search(query, limit=limit) if r.kind == "album"]
+
+    def find_album(self, query: str, *, limit: int = 24) -> Record | None:
+        """One album for a query: an exact title match when there is one, else the first."""
+        wanted = normalise_title(query)
+        candidates = self.search_albums(query, limit=limit)
+        for candidate in candidates:
+            if normalise_title(candidate.title) == wanted:
+                return candidate
+        return candidates[0] if candidates else None
+
     # -------------------------------------------------------------------- loans
     def borrow_issue(self, record_id: str, issue: str, *, screen: str = DEFAULT_SCREEN) -> Checkout:
         """Borrow a dated issue of a newspaper or magazine."""
         patron = self.ensure_login()
         day = issue_date(issue)
         query = f"patronId={patron}&from={screen}&issueDate={day}"
+        response = self._request("POST", f"/records/{record_id}/checkout?{query}", form=query)
+        return Checkout.from_json(response.json())
+
+    def borrow_record(self, record_id: str, *, screen: str = DEFAULT_SCREEN) -> Checkout:
+        """Borrow a whole record — a music album.
+
+        A newspaper borrows a *dated issue*; an album has no issue date at all,
+        and sending one earns an HTTP 400.
+        """
+        patron = self.ensure_login()
+        query = f"patronId={patron}&from={screen}"
         response = self._request("POST", f"/records/{record_id}/checkout?{query}", form=query)
         return Checkout.from_json(response.json())
 
@@ -415,6 +511,178 @@ class OdiloClient:
         path = folder / f"{checkout.record_id}-{stamp}-{wanted.lower()}{suffix}"
         path.write_bytes(blob)
         return path
+
+    # ------------------------------------------------------------------- albums
+    def mp3_player(self, checkout: Checkout) -> dict[str, Any]:
+        """The player a loan's ``MP3`` format hands out.
+
+        An album's formats are ``MP3`` and ``AUDIO_ENCRYPTED`` — there is no ACSM,
+        so libgourou has nothing to do here. ``MP3`` does not serve a file either:
+        it answers with a link to Odilo's player carrying a ``mediaId`` and a
+        **per-checkout keyId**, and the player exchanges that pair for the album's
+        tracks. The keyId is single-use, so this is called once per run.
+        """
+        from urllib.parse import parse_qs, urlencode, urlparse
+
+        token = self.checkout_token(checkout)
+        if not token:
+            raise OdiloError("checkout carries no downloadUrl; re-borrow or re-list loans")
+        query = urlencode({
+            "patronId": self.ensure_login(), "format": "MP3", "token": token,
+            "redirect": "no", "extractUrl": "yes", "recordId": checkout.record_id,
+        })
+        response = self._request("GET", f"/checkouts/{checkout.id}/download?{query}")
+        payload = response.json()
+        url = payload.get("redirect") or payload.get("url")
+        if not url:
+            raise OdiloError(f"no player location in the MP3 response: {str(payload)[:120]}")
+        params = parse_qs(urlparse(url).query)
+        media_id = (params.get("mediaId") or [None])[0]
+        key_id = (params.get("keyId") or [None])[0]
+        if not media_id or not key_id:
+            raise OdiloError(f"player link without mediaId/keyId: {url[:120]}")
+        return {"player_url": url, "media_id": media_id, "key_id": key_id}
+
+    def play_manifest(self, player: dict[str, Any]) -> dict[str, Any]:
+        """The album's track list, as plain (signed) MP3 URLs.
+
+        Verified against the live player: the resources are complete tracks at
+        192 kbps, not previews — the preview is a separate object under
+        ``metadata.previewUrl``.
+        """
+        from urllib.parse import quote
+
+        url = (f"{self.settings.player_url.rstrip('/')}/api/v1/media/"
+               f"{quote(str(player['media_id']))}/play?keyId={quote(str(player['key_id']))}")
+        response = self.session.request(
+            "GET", url,
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT,
+                     "Referer": player.get("player_url") or self.settings.player_url},
+            timeout=self.settings.timeout)
+        if response.status_code != 200:
+            raise RequestFailure(response.status_code, "GET play manifest", response.text[:200])
+        return response.json()
+
+    def download_track(self, url: str, dest: Any, *, referer: str | None = None,
+                       chunk: int = 1 << 18) -> int:
+        """Stream one track to disk; returns the bytes written.
+
+        The CDN refuses a bare request — it wants the player as the referer — and
+        a partially written file is never allowed to become a track.
+        """
+        import pathlib
+
+        dest = pathlib.Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        partial = dest.with_suffix(dest.suffix + ".part")
+        headers = {"User-Agent": USER_AGENT}
+        if referer:
+            headers["Referer"] = referer
+        response = self.session.request("GET", url, headers=headers, stream=True,
+                                        timeout=self.settings.timeout)
+        if response.status_code != 200:
+            raise RequestFailure(response.status_code, url, getattr(response, "text", "")[:200])
+        written = 0
+        try:
+            with open(partial, "wb") as handle:
+                stream = getattr(response, "iter_content", None)
+                if callable(stream):
+                    for block in stream(chunk):
+                        handle.write(block)
+                        written += len(block)
+                else:  # a transport without streaming (the tests' fake session)
+                    payload = response.content or b""
+                    handle.write(payload)
+                    written = len(payload)
+        except (OSError, RequestFailure):
+            partial.unlink(missing_ok=True)
+            raise
+        if written <= 0:
+            partial.unlink(missing_ok=True)
+            raise OdiloError(f"empty track response from {url.split('?')[0]}")
+        partial.replace(dest)
+        return written
+
+    def fetch_album(self, record_id: str, *, dest_dir: Any = None,
+                    reuse_loan: bool = True) -> dict[str, Any]:
+        """Borrow an album, hand the loan back, then download its tracks.
+
+        The order is the whole point, and it is the opposite of the newspaper
+        flow: the MP3 player link is obtained while the loan is open, the loan is
+        **returned immediately**, and only then are the (signed, still valid)
+        track URLs fetched. Downloading first would leave a 21-day audio loan on
+        the account that the platform refuses to take back — measured: after a
+        track is downloaded, ``returnable`` is ``false`` and every return earns
+        HTTP 400. Requesting ``AUDIO_ENCRYPTED``/``OCS``/``ACSM`` for an album
+        poisons the loan the same way, so nothing else is ever asked for.
+        """
+        import pathlib
+
+        record = self.record(record_id)
+        # ``dest_dir`` is the *base*: each album owns a directory named after its
+        # catalogue record, so two albums can never mix tracks.
+        base = pathlib.Path(dest_dir) if dest_dir else self.settings.music_dir
+        folder = base / record.id
+        stored = _read_json(folder / "album.json")
+        if stored and stored.get("tracks") and all(
+            (folder / t.get("file", "")).exists() and (folder / t["file"]).stat().st_size > 0
+            for t in stored["tracks"]
+        ):
+            # Already here: borrowing again would spend the account's loan for
+            # bytes that are on disk, so a re-run costs nothing at all.
+            total = sum(int(t.get("bytes") or 0) for t in stored["tracks"])
+            return {**stored, "already_fetched": True, "album_dir": str(folder),
+                    "album_file": str(folder / "album.json"), "bytes": total,
+                    "track_count": len(stored["tracks"])}
+
+        checkout = (self.checkout_for(record_id) if reuse_loan else None) or \
+            self.borrow_record(record_id)
+        player = self.mp3_player(checkout)
+        returned = self.return_checkout(checkout.id)
+
+        manifest = self.play_manifest(player)
+        resources = [r for r in (manifest.get("resources") or []) if r.get("url")]
+        folder.mkdir(parents=True, exist_ok=True)
+
+        tracks: list[dict[str, Any]] = []
+        total = 0
+        for index, resource in enumerate(resources, 1):
+            label = track_label(resource.get("title"))
+            name = f"{index:02d} - {safe_filename(label)}.mp3"
+            path = folder / name
+            if path.exists() and path.stat().st_size > 0:  # a re-run re-downloads nothing
+                written = path.stat().st_size
+            else:
+                written = self.download_track(resource["url"], path,
+                                              referer=player["player_url"])
+            total += written
+            tracks.append({
+                "file": name,
+                "title": label,
+                "duration_ms": int(resource.get("duration") or 0),
+                "bytes": written,
+                "object": resource.get("object"),
+            })
+
+        album = {
+            "source": "ebiblio-catalunya",
+            "record_id": record.id,
+            "title": record.title,
+            "author": record.author,
+            "publisher": record.raw.get("publisher"),
+            "year": record.year,
+            "language": record.raw.get("language"),
+            "subjects": record.subjects,
+            "cover": record.raw.get("coverImageUrl"),
+            "checkout_id": checkout.id,
+            "returned": returned,
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "tracks": tracks,
+        }
+        meta_path = folder / "album.json"
+        meta_path.write_text(json.dumps(album, indent=2, ensure_ascii=False) + "\n")
+        return {**album, "album_dir": str(folder), "album_file": str(meta_path),
+                "bytes": total, "track_count": len(tracks)}
 
 
 def is_acsm(blob: bytes) -> bool:
