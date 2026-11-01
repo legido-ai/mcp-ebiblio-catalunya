@@ -69,11 +69,14 @@ def parse_loan_list(text: str) -> list[dict[str, str]]:
         if not row or set(row) <= {"-", " "} or row.upper().startswith("ID"):
             continue
         parts = row.split()
-        # A real row is "<hex id> <title...> (<expiration>)"; this also skips the
-        # "No books loaned" line the tool prints when there is nothing to show.
+        # A real row is "<hex id> <title...> (<expiration>)". The title is
+        # truncated by the tool at a fixed width, so it can end in the middle of
+        # a parenthesised subtitle ("(Los mejores cl") -- then the expiration is
+        # bare ("2026-11-22T11:28:48Z") instead of wrapped. Accept both shapes.
         if len(parts) < 3 or not re.fullmatch(r"[0-9a-f]{8,}", parts[0]):
             continue
-        if not parts[-1].startswith("("):
+        last = parts[-1]
+        if not (last.startswith("(") or re.match(r"\d{4}-\d{2}-\d{2}", last)):
             continue
         loans.append({
             "loan_id": parts[0],

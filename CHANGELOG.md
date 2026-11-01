@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.1 — 2026-11-01
+
+**Books, not only the press.** Fetching a *book* from the Catalan catalogue is a
+different shape from fetching an issue, and the loan-return path had a parser
+bug that made every book loan leak.
+
+- `scripts/find.py`: resolve a book by title. The catalogue search
+  (`/records?query=`) is token-OR ordered by `fechaModifica_dt`, so a title with
+  common words ("cañas y barro") returns 38 000 records with the target buried;
+  a narrower query ("barro", 241 records) plus a client-side title filter is the
+  reliable route. `find_publication` cannot do this: it matches serials only.
+- `scripts/fetch_book.py <record_id>`: borrow → ACSM → libgourou → DRM-free
+  EPUB → MOBI, returning the loan at the ADEPT level. Run it in the
+  `mcp-ebiblio:local` image with `src/`, `scripts/` and the data volume mounted.
+- **Fix — `parse_loan_list` dropped rows whose truncated title ends inside an
+  opening parenthesis.** `adept_loan_mgt -l` cuts the title at a fixed width, so
+  `Cañas y barro (Los mejores clásicos)` comes back as `Cañas y barro (Los
+  mejores cl` followed by a *bare* timestamp instead of `(expiration)`. The
+  parser required the last field to start with `(`, skipped the row, and
+  `return_latest()` therefore believed there were no loans: every fulfilled ACSM
+  stayed on the account until it expired, while `fetch_issue`/`fetch_book`
+  reported success. The expiration field is now accepted bare
+  (`YYYY-MM-DD…`) or wrapped, with a regression test
+  (`test_parse_loan_list_accepts_a_title_truncated_inside_parentheses`).
+  Measured on `Cañas y barro` (record `00115631`): the loan now returns and the
+  library account goes back to empty.
+
 ## 0.2.0 — 2026-10-23
 
 **Music albums.** The server now lends recordings, not only the press: two new

@@ -35,6 +35,23 @@ def test_parse_loan_list_reads_id_title_and_expiration():
     assert parse_loan_list("No books loaned\n") == []
 
 
+def test_parse_loan_list_accepts_a_title_truncated_inside_parentheses():
+    """The tool cuts the title at a fixed width, so the wrap can be lost.
+
+    Measured against the live tool: a long title ending in a parenthesised
+    subtitle comes back as "... (Los mejores cl" followed by a bare timestamp.
+    The old parser required the last field to start with "(", so it dropped the
+    row entirely and the loan was never returned.
+    """
+    output = """       ID                        Book                      Expiration
+--------------------------------------------------------------------------
+f56ed52662b36028    Cañas y barro (Los mejores cl    2026-11-22T11:28:48Z
+"""
+    loans = parse_loan_list(output)
+    assert [loan["loan_id"] for loan in loans] == ["f56ed52662b36028"]
+    assert loans[0]["expiration"] == "2026-11-22T11:28:48Z"
+
+
 def test_return_loan_calls_the_loan_manager_with_the_id(tmp_path, monkeypatch):
     captured: dict = {}
 
